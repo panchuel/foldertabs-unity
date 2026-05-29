@@ -17,6 +17,7 @@ namespace BetterTabs
 
         System.Action _onChanged;
 
+
         // ── Interaction state (set each frame via SetCallbacks) ───────────────
         string _selectedAssetPath;
         string _renamingPath;
@@ -178,27 +179,16 @@ namespace BetterTabs
             // ── Normal foldout ────────────────────────────────────────────────
             var icon = EditorGUIUtility.IconContent("Folder Icon").image as Texture2D;
 
-            EnsureCached(folderPath);
-            var (files, subfolders) = _cache[folderPath];
-            int childCount = files.Count + subfolders.Count;
-
-            var foldoutRect = new Rect(rect.x + indent, rect.y, rect.width - indent - 40, rect.height);
+            var foldoutRect = new Rect(rect.x + indent, rect.y, rect.width - indent - 4, rect.height);
             var content = new GUIContent("  " + Path.GetFileName(folderPath), icon);
             bool result = EditorGUI.Foldout(foldoutRect, expanded, content, true, EditorStyles.foldout);
-
-            var badgeStyle = new GUIStyle(EditorStyles.miniLabel)
-            {
-                alignment = TextAnchor.MiddleRight,
-                normal = { textColor = new Color(0.55f, 0.55f, 0.55f) }
-            };
-            GUI.Label(new Rect(rect.xMax - 38, rect.y, 36, rect.height), $"({childCount})", badgeStyle);
 
             // ── Right-click context menu ───────────────────────────────────────
             if (ev.type == EventType.ContextClick && rect.Contains(ev.mousePosition))
             {
-                var menu = BetterTabsInteractionHandler.BuildFolderContextMenu(
-                    folderPath, _onRenameRequested, _onAssetChanged, _onRefreshRequested);
-                menu.ShowAsContext();
+                BetterTabsInteractionHandler.BuildFolderContextMenu(
+                    folderPath, _onRenameRequested, _onAssetChanged, _onRefreshRequested)
+                    .ShowAsContext();
                 ev.Use();
             }
 
@@ -228,21 +218,18 @@ namespace BetterTabs
             }
 
             // ── Mouse events ─────────────────────────────────────────────────
-            if (ev.type == EventType.MouseDown && rect.Contains(ev.mousePosition))
+            if (ev.type == EventType.MouseDown && rect.Contains(ev.mousePosition) && ev.button == 0)
             {
-                if (ev.button == 0)
-                {
-                    if (ev.clickCount == 2) { BetterTabsInteractionHandler.OpenAsset(path); ev.Use(); }
-                    else { _onSelected?.Invoke(path); ev.Use(); }
-                }
-                else if (ev.button == 1)
-                {
-                    // Right-click shows menu without changing visual selection
-                    var menu = BetterTabsInteractionHandler.BuildContextMenu(
-                        path, _onRenameRequested, _onAssetChanged, _onRefreshRequested);
-                    menu.ShowAsContext();
-                    ev.Use();
-                }
+                if (ev.clickCount == 2) { BetterTabsInteractionHandler.OpenAsset(path); ev.Use(); }
+                else { _onSelected?.Invoke(path); ev.Use(); }
+            }
+
+            if (ev.type == EventType.ContextClick && rect.Contains(ev.mousePosition))
+            {
+                BetterTabsInteractionHandler.BuildContextMenu(
+                    path, _onRenameRequested, _onAssetChanged, _onRefreshRequested)
+                    .ShowAsContext();
+                ev.Use();
             }
 
             if (ev.type == EventType.MouseDrag && rect.Contains(ev.mousePosition))

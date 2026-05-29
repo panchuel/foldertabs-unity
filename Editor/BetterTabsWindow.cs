@@ -57,6 +57,21 @@ namespace BetterTabs
         const int GridIconSize = 64;
         const int GridCellSize = 80;
 
+        // ── Project panel ─────────────────────────────────────────────────────
+        bool _projectPanelOpen;
+        float _splitterX = 220f;
+        bool _splitterDragging;
+        BetterProjectTreeRenderer _projectTree;
+        Vector2 _projectScroll;
+
+        // ── Layout bounds (set each frame in OnGUI) ───────────────────────────
+        float _rightX;
+        float _rightW;
+
+        static string ProjectPanelOpenKey => $"BetterTabs_ProjectPanelOpen_{Application.productName}";
+        static string SplitterXKey => $"BetterTabs_SplitterX_{Application.productName}";
+        static string ProjectExpandedKey => $"BetterTabs_ProjectExpanded_{Application.productName}";
+
         // ── Static API (used by postprocessor) ───────────────────────────────
 
         public static void RequestRefresh()
@@ -103,6 +118,12 @@ namespace BetterTabs
             _search = new BetterSearchHandler();
             _tree = new BetterTreeRenderer(OnFoldoutToggled);
 
+            _projectTree = new BetterProjectTreeRenderer();
+            _projectTree.Setup(OnProjectPanelItemClicked, OnAssetDragged, () => { _projectTree.InvalidateCache(); RequestRefresh(); });
+            _projectPanelOpen = EditorPrefs.GetBool(ProjectPanelOpenKey, false);
+            _splitterX = EditorPrefs.GetFloat(SplitterXKey, 220f);
+            _projectTree.LoadExpandedState(EditorPrefs.GetString(ProjectExpandedKey, ""));
+
             if (BetterTabsPrefs.Load(out var tabs, out var idx))
             {
                 _tabs = tabs;
@@ -110,6 +131,7 @@ namespace BetterTabs
             }
 
             RestoreActiveTabState();
+            SyncProjectTreeHighlight();
 
             EditorApplication.projectChanged += OnProjectChanged;
         }
@@ -120,6 +142,10 @@ namespace BetterTabs
             EditorApplication.projectChanged -= OnProjectChanged;
             PersistActiveTabState();
             BetterTabsPrefs.Save(_tabs, _selectedIndex);
+            EditorPrefs.SetBool(ProjectPanelOpenKey, _projectPanelOpen);
+            EditorPrefs.SetFloat(SplitterXKey, _splitterX);
+            if (_projectTree != null)
+                EditorPrefs.SetString(ProjectExpandedKey, _projectTree.SaveExpandedState());
         }
 
         void OnProjectChanged()
@@ -130,11 +156,11 @@ namespace BetterTabs
         // ── GUI ──────────────────────────────────────────────────────────────
         void OnGUI()
         {
-            // Process dirty flag at the top of every frame
             if (s_dirty)
             {
                 s_dirty = false;
                 _tree.InvalidateCache();
+                _projectTree?.InvalidateCache();
                 Repaint();
             }
 
@@ -142,20 +168,35 @@ namespace BetterTabs
             {
                 _dragTabIndex = -1;
                 _pressedTabIndex = -1;
+                if (_splitterDragging) _splitterDragging = false;
             }
 
             HandleKeyboardShortcuts();
             HandleDragEvents();
 
+            DrawTabBar();
+
+            // Layout bounds for the right panel
+            _rightX = _projectPanelOpen ? _splitterX + 4 : 0;
+            _rightW = position.width - _rightX;
+
+            // Left project panel
+            if (_projectPanelOpen)
+            {
+                DrawProjectPanel(new Rect(0, TabHeight, _splitterX, position.height - TabHeight));
+                DrawSplitter();
+            }
+
+            // Right panel content
             if (_tabs.Count == 0)
             {
                 DrawEmptyState();
-                return;
             }
-
-            DrawTabBar();
-            if (ActiveTabIsFolder()) DrawSearchToolbar();
-            DrawContent();
+            else
+            {
+                if (ActiveTabIsFolder()) DrawSearchToolbar();
+                DrawContent();
+            }
 
             if (_isDragHovering)
                 DrawDropOverlay();
@@ -167,7 +208,7 @@ namespace BetterTabs
         // ── Empty state ──────────────────────────────────────────────────────
         void DrawEmptyState()
         {
-            var r = new Rect(0, 0, position.width, position.height);
+            var r = new Rect(_rightX, 0, _rightW, position.height);
 
             if (_isDragHovering)
             {
@@ -186,7 +227,7 @@ namespace BetterTabs
         // ── Tab bar ──────────────────────────────────────────────────────────
         void DrawTabBar()
         {
-            const float rightReserved = 52f;
+            const float rightReserved = 54f;
             const float arrowW = 16f;
             float fullBarWidth = position.width - rightReserved;
             GUI.Box(new Rect(0, 0, position.width, TabHeight), GUIContent.none, EditorStyles.toolbar);
@@ -342,6 +383,24 @@ namespace BetterTabs
                     AddOrSelectTab(selPath);
             }
 
+            // ── Project panel toggle ──────────────────────────────────────────
+            var panelIcon = EditorGUIUtility.FindTexture("d_Project");
+            var panelContent = panelIcon != null
+                ? new GUIContent(panelIcon, _projectPanelOpen ? "Hide Project Panel" : "Show Project Panel")
+                : new GUIContent(_projectPanelOpen ? "◁" : "▷", _projectPanelOpen ? "Hide Project Panel" : "Show Project Panel");
+
+            var panelBtnRect = new Rect(position.width - 28, 1, 26, TabHeight - 2);
+            if (GUI.Button(panelBtnRect, panelContent, EditorStyles.toolbarButton))
+            {
+                _projectPanelOpen = !_projectPanelOpen;
+                if (_projectPanelOpen)
+                {
+                    _projectTree.InvalidateCache();
+                    SyncProjectTreeHighlight();
+                }
+                EditorPrefs.SetBool(ProjectPanelOpenKey, _projectPanelOpen);
+            }
+
             if (toRemove >= 0)
                 RemoveTab(toRemove);
         }
@@ -427,14 +486,14 @@ namespace BetterTabs
         void DrawSearchToolbar()
         {
             float y = TabHeight;
-            var toolbarRect = new Rect(0, y, position.width, TabHeight);
+            var toolbarRect = new Rect(_rightX, y, _rightW, TabHeight);
             GUI.Box(toolbarRect, GUIContent.none, EditorStyles.toolbar);
 
             float clearBtnW = _searchInputText.Length > 0 ? 20 : 0;
             float viewBtnW = 26;
-            float fieldW = position.width - clearBtnW - viewBtnW - 6;
+            float fieldW = _rightW - clearBtnW - viewBtnW - 6;
 
-            var searchRect = new Rect(2, y + 2, fieldW, TabHeight - 4);
+            var searchRect = new Rect(_rightX + 2, y + 2, fieldW, TabHeight - 4);
 
             EditorGUI.BeginChangeCheck();
             _searchInputText = EditorGUI.TextField(searchRect, _searchInputText, EditorStyles.toolbarSearchField);
@@ -451,12 +510,12 @@ namespace BetterTabs
 
             if (clearBtnW > 0)
             {
-                var clearRect = new Rect(2 + fieldW, y + 2, clearBtnW - 2, TabHeight - 4);
+                var clearRect = new Rect(_rightX + 2 + fieldW, y + 2, clearBtnW - 2, TabHeight - 4);
                 if (GUI.Button(clearRect, "×", EditorStyles.toolbarButton))
                     ClearSearch();
             }
 
-            var toggleRect = new Rect(position.width - viewBtnW - 2, y + 1, viewBtnW, TabHeight - 2);
+            var toggleRect = new Rect(_rightX + _rightW - viewBtnW - 2, y + 1, viewBtnW, TabHeight - 2);
             var viewIcon = _gridView
                 ? EditorGUIUtility.FindTexture("UnityEditor.SceneView")
                 : EditorGUIUtility.FindTexture("d_GridLayoutGroup Icon");
@@ -474,7 +533,7 @@ namespace BetterTabs
         {
             if (_selectedIndex < 0 || _selectedIndex >= _tabs.Count)
             {
-                var emptyRect = new Rect(0, TabHeight, position.width, position.height - TabHeight);
+                var emptyRect = new Rect(_rightX, TabHeight, _rightW, position.height - TabHeight);
                 GUI.Label(emptyRect, "No tab selected.", EditorStyles.centeredGreyMiniLabel);
                 return;
             }
@@ -483,13 +542,13 @@ namespace BetterTabs
 
             if (!ActiveTabIsFolder())
             {
-                var pinRect = new Rect(0, TabHeight, position.width, position.height - TabHeight);
+                var pinRect = new Rect(_rightX, TabHeight, _rightW, position.height - TabHeight);
                 DrawAssetPinView(pinRect, rootPath);
                 return;
             }
 
             float topOffset = TabHeight * 2;
-            var listRect = new Rect(0, topOffset, position.width, position.height - topOffset);
+            var listRect = new Rect(_rightX, topOffset, _rightW, position.height - topOffset);
 
             if (_search.IsSearching)
             {
@@ -611,19 +670,16 @@ namespace BetterTabs
         {
             var ev = Event.current;
 
-            if (ev.type == EventType.MouseDown && rowRect.Contains(ev.mousePosition))
+            if (ev.type == EventType.MouseDown && rowRect.Contains(ev.mousePosition) && ev.button == 0)
             {
-                if (ev.button == 0)
-                {
-                    if (ev.clickCount == 2) { BetterTabsInteractionHandler.OpenAsset(path); ev.Use(); }
-                    else { OnAssetSelected(path); ev.Use(); }
-                }
-                else if (ev.button == 1)
-                {
-                    var menu = BetterTabsInteractionHandler.BuildContextMenu(path, StartRename, OnAssetModified, RequestRefresh);
-                    menu.ShowAsContext();
-                    ev.Use();
-                }
+                if (ev.clickCount == 2) { BetterTabsInteractionHandler.OpenAsset(path); ev.Use(); }
+                else { OnAssetSelected(path); ev.Use(); }
+            }
+            if (ev.type == EventType.ContextClick && rowRect.Contains(ev.mousePosition))
+            {
+                BetterTabsInteractionHandler.BuildContextMenu(path, StartRename, OnAssetModified, RequestRefresh)
+                    .ShowAsContext();
+                ev.Use();
             }
             if (ev.type == EventType.MouseDrag && rowRect.Contains(ev.mousePosition))
             { OnAssetDragged(path); ev.Use(); }
@@ -700,26 +756,23 @@ namespace BetterTabs
             if (isSelected)
                 EditorGUI.DrawRect(cellRect, new Color(0.17f, 0.36f, 0.53f, 0.6f));
 
-            if (ev.type == EventType.MouseDown && cellRect.Contains(ev.mousePosition))
+            if (ev.type == EventType.MouseDown && cellRect.Contains(ev.mousePosition) && ev.button == 0)
             {
-                if (ev.button == 0)
+                if (ev.clickCount == 2)
                 {
-                    if (ev.clickCount == 2)
-                    {
-                        if (isFolder) AddOrSelectTab(path);
-                        else BetterTabsInteractionHandler.OpenAsset(path);
-                        ev.Use();
-                    }
-                    else { OnAssetSelected(path); ev.Use(); }
-                }
-                else if (ev.button == 1)
-                {
-                    var menu = isFolder
-                        ? BetterTabsInteractionHandler.BuildFolderContextMenu(path, StartRename, OnAssetModified, RequestRefresh)
-                        : BetterTabsInteractionHandler.BuildContextMenu(path, StartRename, OnAssetModified, RequestRefresh);
-                    menu.ShowAsContext();
+                    if (isFolder) AddOrSelectTab(path);
+                    else BetterTabsInteractionHandler.OpenAsset(path);
                     ev.Use();
                 }
+                else { OnAssetSelected(path); ev.Use(); }
+            }
+            if (ev.type == EventType.ContextClick && cellRect.Contains(ev.mousePosition))
+            {
+                var menu = isFolder
+                    ? BetterTabsInteractionHandler.BuildFolderContextMenu(path, StartRename, OnAssetModified, RequestRefresh)
+                    : BetterTabsInteractionHandler.BuildContextMenu(path, StartRename, OnAssetModified, RequestRefresh);
+                menu.ShowAsContext();
+                ev.Use();
             }
             if (ev.type == EventType.MouseDrag && cellRect.Contains(ev.mousePosition))
             { OnAssetDragged(path); ev.Use(); }
@@ -749,6 +802,79 @@ namespace BetterTabs
                 else hi = mid - 1;
             }
             return lo == 0 ? "…" : text[..lo] + "…";
+        }
+
+        // ── Project panel ─────────────────────────────────────────────────────
+        void DrawProjectPanel(Rect r)
+        {
+            // Background
+            EditorGUI.DrawRect(r, EditorGUIUtility.isProSkin
+                ? new Color(0.19f, 0.19f, 0.19f, 1f)
+                : new Color(0.76f, 0.76f, 0.76f, 1f));
+
+            // Scroll content
+            var contentArea = new Rect(r.x, r.y, r.width, r.height);
+            float contentH = _projectTree.MeasureHeight();
+            float panelW = contentArea.width;
+            var contentRect = new Rect(0, 0, panelW - 16, Mathf.Max(contentH, contentArea.height));
+
+            _projectScroll = GUI.BeginScrollView(contentArea, _projectScroll, contentRect);
+            GUILayout.BeginArea(new Rect(0, 0, contentRect.width, Mathf.Max(contentH, 1f)));
+            _projectTree.Draw(contentRect.width);
+            GUILayout.EndArea();
+            GUI.EndScrollView();
+        }
+
+        void DrawSplitter()
+        {
+            var splitterRect = new Rect(_splitterX, TabHeight, 4, position.height - TabHeight);
+            EditorGUI.DrawRect(splitterRect, new Color(0.1f, 0.1f, 0.1f, 1f));
+            EditorGUIUtility.AddCursorRect(splitterRect, MouseCursor.ResizeHorizontal);
+
+            var ev = Event.current;
+            if (ev.type == EventType.MouseDown && splitterRect.Contains(ev.mousePosition) && ev.button == 0)
+            {
+                _splitterDragging = true;
+                ev.Use();
+            }
+
+            if (_splitterDragging)
+            {
+                if (ev.type == EventType.MouseDrag)
+                {
+                    _splitterX = Mathf.Clamp(ev.mousePosition.x, 100f, position.width - 200f);
+                    _rightX = _splitterX + 4;
+                    _rightW = position.width - _rightX;
+                    ev.Use();
+                    Repaint();
+                }
+                if (ev.type == EventType.MouseUp)
+                {
+                    _splitterDragging = false;
+                    EditorPrefs.SetFloat(SplitterXKey, _splitterX);
+                    ev.Use();
+                }
+            }
+        }
+
+        void SyncProjectTreeHighlight()
+        {
+            if (_projectTree == null) return;
+            string path = !string.IsNullOrEmpty(_selectedAssetPath) ? _selectedAssetPath : ActiveTabPath();
+            if (string.IsNullOrEmpty(path)) return;
+            _projectTree.SetHighlight(path);
+            _projectTree.ExpandToPath(path);
+            ScrollProjectPanelToPath(path);
+        }
+
+        void ScrollProjectPanelToPath(string path)
+        {
+            if (!_projectPanelOpen || _projectTree == null) return;
+            float y = _projectTree.GetYPositionOf(path);
+            if (y < 0f) return;
+            float panelH = position.height - TabHeight * 2f;
+            if (y < _projectScroll.y || y + 20f > _projectScroll.y + panelH)
+                _projectScroll.y = Mathf.Max(0f, y - panelH * 0.35f);
         }
 
         // ── Folder drag-drop handling ─────────────────────────────────────────
@@ -794,7 +920,7 @@ namespace BetterTabs
 
         void DrawDropOverlay()
         {
-            var r = new Rect(0, 0, position.width, position.height);
+            var r = new Rect(_rightX, 0, _rightW, position.height);
             EditorGUI.DrawRect(r, new Color(0.2f, 0.5f, 1f, 0.08f));
             DrawBorder(r, new Color(0.3f, 0.6f, 1f, 0.8f), 2f);
         }
@@ -809,11 +935,30 @@ namespace BetterTabs
 
         // ── Asset selection / interaction callbacks ────────────────────────────
 
+        void OnProjectPanelItemClicked(string path)
+        {
+            _selectedAssetPath = path;
+            _projectTree.SetHighlight(path);
+            string capturedPath = path;
+            EditorApplication.delayCall += () =>
+            {
+                Object obj = AssetDatabase.LoadAssetAtPath<Object>(capturedPath);
+                if (obj != null) Selection.activeObject = obj;
+            };
+            Repaint();
+        }
+
         void OnAssetSelected(string path)
         {
             _selectedAssetPath = path;
             var obj = AssetDatabase.LoadAssetAtPath<Object>(path);
             if (obj != null) Selection.activeObject = obj;
+            if (_projectPanelOpen)
+            {
+                _projectTree.SetHighlight(path);
+                _projectTree.ExpandToPath(path);
+                ScrollProjectPanelToPath(path);
+            }
             Repaint();
         }
 
@@ -990,6 +1135,7 @@ namespace BetterTabs
             }
 
             RestoreActiveTabState();
+            SyncProjectTreeHighlight();
             Repaint();
             BetterTabsPrefs.Save(_tabs, _selectedIndex);
         }

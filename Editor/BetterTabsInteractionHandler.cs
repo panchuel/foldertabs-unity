@@ -81,26 +81,25 @@ namespace BetterTabs
         static void AddCreateSubmenu(GenericMenu menu, string targetFolder,
             System.Action<string> onRenameRequested, System.Action onRefresh)
         {
-            menu.AddItem(new GUIContent("Create/Folder"), false, () =>
+            Object folderObj = AssetDatabase.LoadAssetAtPath<Object>(targetFolder);
+            string[] allItems = Unsupported.GetSubmenus("Assets/Create");
+
+            foreach (string fullPath in allItems)
             {
-                BetterTabsCreator.CreateFolder(targetFolder, onRenameRequested);
-                onRefresh?.Invoke();
-            });
-            menu.AddItem(new GUIContent("Create/C# Script"), false, () =>
-            {
-                BetterTabsCreator.CreateScript(targetFolder);
-                onRefresh?.Invoke();
-            });
-            menu.AddItem(new GUIContent("Create/Scene"), false, () =>
-            {
-                BetterTabsCreator.CreateScene(targetFolder);
-                onRefresh?.Invoke();
-            });
-            menu.AddItem(new GUIContent("Create/Material"), false, () =>
-            {
-                BetterTabsCreator.CreateMaterial(targetFolder);
-                onRefresh?.Invoke();
-            });
+                if (string.IsNullOrEmpty(fullPath)) continue;
+
+                string displayPath = fullPath.StartsWith("Assets/")
+                    ? fullPath.Substring("Assets/".Length)
+                    : fullPath;
+
+                string capturedPath = fullPath;
+                menu.AddItem(new GUIContent(displayPath), false, () =>
+                {
+                    if (folderObj != null) Selection.activeObject = folderObj;
+                    EditorApplication.ExecuteMenuItem(capturedPath);
+                    onRefresh?.Invoke();
+                });
+            }
         }
 
         public static GenericMenu BuildContextMenu(
@@ -133,6 +132,22 @@ namespace BetterTabs
             menu.AddSeparator("");
             menu.AddItem(new GUIContent("Copy Path"), false, () => CopyPath(path));
             menu.AddItem(new GUIContent("Select Dependencies"), false, () => SelectDependencies(path));
+            menu.AddItem(new GUIContent("Find References In Project"), false, () =>
+            {
+                if (obj != null)
+                {
+                    Selection.activeObject = obj;
+                    EditorApplication.ExecuteMenuItem("Assets/Find References In Project");
+                }
+            });
+            menu.AddSeparator("");
+            menu.AddItem(new GUIContent("Reimport"), false, () =>
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate));
+            menu.AddItem(new GUIContent("Refresh"), false, () =>
+            {
+                AssetDatabase.Refresh();
+                onRefresh?.Invoke();
+            });
             menu.AddSeparator("");
             if (obj != null)
                 menu.AddItem(new GUIContent("Properties"), false, () => OpenProperties(path));
@@ -163,6 +178,23 @@ namespace BetterTabs
             });
             menu.AddSeparator("");
             menu.AddItem(new GUIContent("Copy Path"), false, () => CopyPath(folderPath));
+            menu.AddItem(new GUIContent("Find References In Project"), false, () =>
+            {
+                var obj = AssetDatabase.LoadAssetAtPath<Object>(folderPath);
+                if (obj != null)
+                {
+                    Selection.activeObject = obj;
+                    EditorApplication.ExecuteMenuItem("Assets/Find References In Project");
+                }
+            });
+            menu.AddSeparator("");
+            menu.AddItem(new GUIContent("Reimport"), false, () =>
+                AssetDatabase.ImportAsset(folderPath, ImportAssetOptions.ForceUpdate));
+            menu.AddItem(new GUIContent("Refresh"), false, () =>
+            {
+                AssetDatabase.Refresh();
+                onRefresh?.Invoke();
+            });
 
             return menu;
         }
